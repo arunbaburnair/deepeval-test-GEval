@@ -6,7 +6,7 @@ from deepeval.metrics import ExactMatchMetric, BaseMetric
 
 
 # ===== Gemini setup =====
-GEMINI_API_KEY = "AIzaSyB9pbVAZt_q7wmaoIwF7vwZytLvkvJp9IM"
+GEMINI_API_KEY = "AIzaSyB9pbVAZt_q7wmaoIwF**************"
 genai.configure(api_key=GEMINI_API_KEY)
 MODEL = "gemini-2.0-flash"
 
@@ -110,3 +110,4 @@ evaluate(
     test_cases,
     metrics=[exact_match, gemini_relevance, gemini_faithfulness]
 )
+
