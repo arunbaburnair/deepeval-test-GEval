@@ -5,15 +5,15 @@ from deepeval.test_case import LLMTestCase
 from deepeval.metrics import ExactMatchMetric, BaseMetric
 
 
-# ===== Gemini setup =====
-GEMINI_API_KEY = "AIzaSyB9pbVAZt_q7wm*****************************************"
+# ===== GEMINI CONFIGURATION =====
+GEMINI_API_KEY = "AIzaSyB9pbVAZt_q7wmao**************************************"
 genai.configure(api_key=GEMINI_API_KEY)
 MODEL = "gemini-2.0-flash"
 
 
-# ===== Call local mock server =====
+# ===== LOCAL MOCK SERVER CALL =====
 def call_mock_server(prompt: str) -> dict:
-    """Send input to local mock FastAPI server and return output + context"""
+    """Send input to local mock FastAPI server and return output + context."""
     try:
         resp = requests.post("http://127.0.0.1:8000/query", json={"input": prompt}, timeout=10)
         resp.raise_for_status()
@@ -27,44 +27,53 @@ def call_mock_server(prompt: str) -> dict:
         return {"output": "", "context": []}
 
 
-# ===== Custom Gemini evaluation metric =====
+# ===== CUSTOM GEMINI EVAL METRIC (GENERIC CLASS) =====
 class GeminiEvalMetric(BaseMetric):
-    def __init__(self, name: str, criteria: str):
+    def __init__(self, name: str, criteria: str, threshold: float = 0.5):
         self.name = name
         self.criteria = criteria
         self.score = 0.0
         self.reason = ""
-        self.threshold = 0.5
+        self.threshold = threshold
         self.async_mode = True
         self.strict_mode = False
 
     async def a_measure(self, test_case):
-        """Async evaluator run by DeepEval"""
-        # We inject context manually here
-        prompt = f"""
-You are evaluating a model answer.
+        """Asynchronous metric evaluation using Gemini."""
+        # Combine all retrieval context if available
+        context_data = getattr(test_case, "retrieval_context", [])
+        if isinstance(context_data, list):
+            context_data = " | ".join(context_data)
 
-Criteria: {self.criteria}
+        prompt = f"""
+You are evaluating a model answer based on the following criteria.
+
+**Criteria:** {self.criteria}
 
 User query: {test_case.input}
-Context (from retrieval): {getattr(test_case, "retrieval_context", "N/A")}
+Retrieved context: {context_data}
 Expected answer: {test_case.expected_output}
 Model answer: {test_case.actual_output}
 
-Rate from 0 (poor) to 1 (excellent) and explain briefly.
+Rate the answer from 0 (poor) to 1 (excellent) and provide a short reason.
 """
         try:
             model = genai.GenerativeModel(MODEL)
             result = model.generate_content(prompt)
             text = (result.text or "").strip()
 
-            # Extract basic numeric signal
+            # crude numeric extraction heuristic
             if "1" in text[:5] or "excellent" in text.lower():
                 self.score = 1.0
             elif "0" in text[:5] or "poor" in text.lower():
                 self.score = 0.0
+            elif "0.8" in text or "0.9" in text:
+                self.score = 0.9
+            elif "0.6" in text or "0.7" in text:
+                self.score = 0.7
             else:
                 self.score = 0.5
+
             self.reason = text
         except Exception as e:
             self.score = 0.0
@@ -74,21 +83,37 @@ Rate from 0 (poor) to 1 (excellent) and explain briefly.
         return self.score >= self.threshold
 
 
-# ===== Metrics =====
+# ===== METRICS DEFINITIONS =====
 exact_match = ExactMatchMetric(verbose_mode=True)
 
 gemini_relevance = GeminiEvalMetric(
     name="Relevance",
-    criteria="Does the answer correctly and completely address the user's query?"
+    criteria="Does the answer directly and completely address the user's question?"
 )
 
 gemini_faithfulness = GeminiEvalMetric(
     name="Faithfulness",
-    criteria="Is the answer factually consistent with the provided context and free from hallucinations?"
+    criteria="Is the answer factually consistent with the retrieved context and free of hallucinations?"
+)
+
+# --- RAGAS-style Gemini metrics ---
+gemini_context_relevance = GeminiEvalMetric(
+    name="Context Relevance",
+    criteria="Does the retrieved context contain information that is directly useful to answer the query?"
+)
+
+gemini_context_precision = GeminiEvalMetric(
+    name="Context Precision",
+    criteria="Among all retrieved context, how much is actually relevant and non-redundant for the query?"
+)
+
+gemini_context_recall = GeminiEvalMetric(
+    name="Context Recall",
+    criteria="Does the context include all necessary information needed to fully answer the user's question?"
 )
 
 
-# ===== Test cases =====
+# ===== TEST CASES =====
 cases_data = [
     ("Tell me about crime rate", "NYPD data shows a 2% drop in overall crime in 2023."),
     ("Explain about burglary incidents", "Burglary incidents were highest in precincts 19 and 23 last year."),
@@ -103,13 +128,20 @@ for user_input, expected in cases_data:
         actual_output=result["output"],
         expected_output=expected
     )
-    # Attach context manually (won't break if older deepeval)
+    # Attach context manually (safe for all deepeval versions)
     case.retrieval_context = result["context"]
     test_cases.append(case)
 
 
-# ===== Run evaluation =====
+# ===== RUN EVALUATION =====
 evaluate(
     test_cases,
-    metrics=[exact_match, gemini_relevance, gemini_faithfulness]
+    metrics=[
+        exact_match,
+        gemini_relevance,
+        gemini_faithfulness,
+        gemini_context_relevance,
+        gemini_context_precision,
+        gemini_context_recall
+    ]
 )
